@@ -1,0 +1,335 @@
+================================================================================
+  PASSWORD MANAGER - DOMANDE E RISPOSTE
+  Documento generato dalla conversazione con Claude
+================================================================================
+
+
+================================================================================
+DOMANDA 1: Come proteggere il file secret.key con una password?
+================================================================================
+
+"Come faccio ad impostare una password per aprire un file? Esempio: voglio
+impostare una password per aprire il file secret.key in modo che cosi' nessuno
+oltre me puo' leggere la chiave di decifratura"
+
+RISPOSTA:
+Mettere una "password su un file" a livello OS non e' pratico ne' sicuro.
+L'approccio corretto e' cifrare la chiave stessa con una master password.
+
+Come funziona:
+1. All'avvio l'app chiede una master password
+2. Da quella password si deriva una chiave di cifratura tramite PBKDF2
+   (algoritmo lento apposta, resistente a brute force)
+3. Quella chiave derivata decifra il contenuto di secret.key
+4. Solo a quel punto si ottiene la Fernet key per leggere il database
+
+Schema:
+
+  Master Password (nella tua testa)
+         |
+     PBKDF2 + salt
+         |
+     Chiave derivata
+         |
+     Decifra secret.key --> Fernet KEY --> Decifra le password nel DB
+
+
+================================================================================
+DOMANDA 2: La master password viene chiesta ogni volta?
+================================================================================
+
+"Quindi ogni volta che avvio il password_manager dopo mi chiedera' la master
+password?"
+
+RISPOSTA:
+Si, esattamente. Il flusso e':
+1. Primo avvio: ti chiede di CREARE la master password (la scegli tu)
+2. Ogni avvio successivo: ti chiede di INSERIRE la master password per
+   sbloccare l'app
+Se la password e' sbagliata, l'app non si apre e le credenziali restano
+inaccessibili.
+
+
+================================================================================
+DOMANDA 3: Dove viene salvata la master password?
+================================================================================
+
+"La master password dove viene salvata?"
+
+RISPOSTA:
+Da nessuna parte. Questo e' il punto di forza del sistema.
+La master password esiste solo nella tua testa.
+
+Quello che viene salvato in secret.key e':
+- Salt (16 bytes casuali)
+- Fernet key cifrata con una chiave derivata dalla tua password
+
+Quando inserisci la master password all'avvio, l'app:
+1. Legge il salt da secret.key
+2. Deriva una chiave dalla password + salt tramite PBKDF2
+3. Prova a decifrare la Fernet key con quella chiave derivata
+4. Se funziona -> password corretta, l'app si apre
+5. Se fallisce -> password sbagliata, errore
+
+Non c'e' nessun confronto tipo: if password == "la_mia_password".
+L'unico modo di verificare se e' giusta e' provare a decifrare.
+
+Questo significa che:
+- Nessuno puo' leggerla dai file del progetto
+- Non puo' essere estratta nemmeno analizzando secret.key
+- Se la dimentichi, non c'e' modo di recuperarla (dovresti rigenerare
+  tutto con genera_chiave.py e perdi le password salvate)
+
+E' lo stesso principio usato da password manager professionali come
+KeePass e 1Password.
+
+
+================================================================================
+DOMANDA 4: Come funziona il riconoscimento della master password?
+================================================================================
+
+"Spiegami in maniera semplice per un neofita di cybersecurity come funziona
+il riconoscimento della master password. Inoltre, cosa viene salvato veramente
+dentro il file secret.key?"
+
+RISPOSTA:
+
+--- Come funziona il riconoscimento ---
+
+Immagina una cassaforte con un lucchetto speciale. Non hai la combinazione
+scritta da nessuna parte, ma il lucchetto sa "riconoscere" se la chiave e'
+giusta perche', se e' quella giusta, si apre. Se e' sbagliata, non si apre.
+
+Nel codice succede esattamente questo:
+
+  Tu scrivi: "lamiapassword123"
+          |
+          v
+  L'app prende la tua password + il salt (dati casuali salvati nel file)
+          |
+          v
+  Li passa dentro un algoritmo (PBKDF2) che li "frulla" 600.000 volte
+          |
+          v
+  Esce una chiave derivata (una stringa di caratteri)
+          |
+          v
+  Con quella chiave prova a decifrare il contenuto cifrato di secret.key
+          |
+          v
+  Funziona? --> La password era giusta --> L'app si apre
+  Non funziona? --> La password era sbagliata --> Errore
+
+Non c'e' mai un confronto diretto. Non esiste da nessuna parte un
+"lamiapassword123" salvato. L'unica "prova" e': se riesce a decifrare,
+era giusta.
+
+--- Cosa c'e' dentro secret.key ---
+
+Il file contiene esattamente due cose, una attaccata all'altra:
+
+  Salt (16 bytes):
+    Dati casuali generati al momento della creazione. Servono per rendere
+    unica la derivazione anche se due persone scelgono la stessa password.
+
+  Fernet key cifrata (~120 bytes):
+    La vera chiave che decifra le password nel database, ma cifrata con
+    la chiave derivata dalla tua master password.
+
+In sintesi:
+- Salt = ingrediente casuale (leggibile, ma inutile da solo)
+- Fernet key cifrata = la chiave "vera" ma chiusa a chiave a sua volta
+- Master password = l'unica chiave che apre tutto, esiste solo nella
+  tua memoria
+
+
+================================================================================
+DOMANDA 5: Come fa a distinguere la password giusta da una sbagliata?
+================================================================================
+
+"Ma come fa a dire che la password che inserisco io e' davvero corretta?
+Quando viene deciso che una password tipo 'lamiapassword123' e' giusta
+mentre una password tipo 'ilmiopassword123' no?"
+
+RISPOSTA:
+Bisogna tornare all'inizio: il momento in cui hai CREATO la master password.
+
+--- Il momento della creazione (una sola volta) ---
+
+Quando hai eseguito genera_chiave.py e hai scritto "lamiapassword123":
+
+  "lamiapassword123" + salt
+          |
+       PBKDF2 (600.000 giri)
+          |
+          v
+     Chiave derivata A
+          |
+          v
+     Con questa chiave A cifra la Fernet key
+          |
+          v
+     Salva in secret.key: [salt] + [Fernet key cifrata con chiave A]
+
+Da quel momento, dentro secret.key c'e' qualcosa che PUO' ESSERE APERTO
+SOLO dalla chiave A. E la chiave A nasce solo da "lamiapassword123" +
+quel salt.
+
+--- Quando provi ad aprire ---
+
+Se scrivi "lamiapassword123" (quella giusta):
+
+  "lamiapassword123" + stesso salt --> PBKDF2 --> Chiave A (identica!)
+          |
+     Prova a decifrare --> Funziona! Si apre.
+
+Se scrivi "ilmiopassword123" (sbagliata):
+
+  "ilmiopassword123" + stesso salt --> PBKDF2 --> Chiave B (diversa!)
+          |
+     Prova a decifrare --> Non funziona. Errore.
+
+--- In parole poverissime ---
+
+Il segreto e' tutto qui: la stessa password + lo stesso salt producono
+SEMPRE la stessa chiave. Sempre. Ogni volta. Ed e' l'unica combinazione
+che la produce.
+
+E' come uno stampo. Quando hai creato la master password, hai creato un
+lucchetto che ha la forma esatta di "lamiapassword123". Qualsiasi altra
+password ha una forma diversa e non entra.
+
+L'app non "sa" qual e' la password giusta. Prova ad aprire il lucchetto
+e vede se la serratura gira.
+
+
+================================================================================
+DOMANDA 6: Esistono app simili? Come si confronta la mia?
+================================================================================
+
+"Esistono gia' siti o app che fanno la stessa cosa dell'app che ho creato io?
+Rispetto a loro com'e' la mia app?"
+
+RISPOSTA:
+
+--- I password manager principali ---
+
+  1Password      - Cloud, multi-dispositivo, a pagamento
+  Bitwarden      - Cloud, open source, gratis/premium
+  KeePass        - Locale, open source, gratis
+  LastPass       - Cloud, gratis/premium
+  Dashlane       - Cloud, a pagamento
+  Il tuo         - Locale, gratis
+
+--- Cosa fai uguale a loro ---
+
+  - Master password per proteggere tutto (come KeePass, 1Password, Bitwarden)
+  - Derivazione della chiave con PBKDF2 + salt (standard del settore)
+  - Cifratura delle password con un algoritmo serio (Fernet usa AES-128)
+  - Database locale (come KeePass)
+
+Il principio di base e' lo stesso.
+
+--- Cosa hanno loro in piu' ---
+
+  - Sincronizzazione cloud tra telefono, PC, tablet
+  - Generatore di password casuali e forti
+  - Auto-fill nei browser (compila login automaticamente)
+  - 2FA / autenticazione a due fattori
+  - Audit delle password (avvisa se debole, duplicata o in data breach)
+  - Condivisione sicura di password con altri utenti
+  - Backup e recovery
+  - Cifratura piu' robusta (AES-256 invece di AES-128, Argon2 al posto
+    di PBKDF2)
+  - Audit di sicurezza da parte di aziende esterne
+
+--- In sintesi ---
+
+La tua app e' un buon punto di partenza e il concetto fondamentale e'
+corretto. Le prossime cose da aggiungere per portarla al livello
+successivo sarebbero un generatore di password e il passaggio ad AES-256
+con Argon2.
+
+
+================================================================================
+DOMANDA 7: Posso venderlo? Quanto vale?
+================================================================================
+
+"Posso venderlo a qualcuno? Quanti soldi mi darebbero?"
+
+RISPOSTA:
+Venderlo cosi' com'e' sarebbe molto difficile. Non perche' sia fatto male,
+ma perche' il mercato dei password manager e' saturo. Bitwarden e' gratis,
+open source, e ha tutte le funzionalita' avanzate.
+
+Come prodotto da vendere: praticamente nulla. Perche':
+- La concorrenza gratuita fa tutto e di piu'
+- Nessuna azienda si fiderebbe senza audit di sicurezza
+- Manca troppa roba per l'utente medio (no browser extension, no mobile)
+- Nessuno installerebbe Python e le dipendenze per un password manager
+
+Dove ha valore vero (personale e professionale):
+- Portfolio: mostralo su GitHub ai colloqui di lavoro
+- Base di partenza: puoi evolverlo e imparare (web app, API, extension)
+- Uso personale: lo usi tu, sai come funziona, non dipendi da nessuno
+- Credibilita': in cybersecurity avere progetti pratici vale molto
+
+Il modo migliore per monetizzare questo progetto non e' venderlo come
+prodotto, ma usarlo per dimostrare cosa sai fare.
+
+
+================================================================================
+DOMANDA 8: Posso modificare il password manager senza perdere le password?
+================================================================================
+
+"Se voglio aggiungere funzionalita' (es. categorie, spostare record tra
+categorie) al mio password manager, posso farlo senza toccare le password
+gia' salvate? E se devo modificare la secret key?"
+
+RISPOSTA:
+
+--- Modifiche solo a password_manager.py (es. aggiungere categorie) ---
+
+Si, puoi farlo tranquillamente. Le password salvate non vengono toccate.
+
+La catena di cifratura e':
+
+  secret.key --> Fernet key --> Decifra le password nel DB (password.db)
+
+Se modifichi solo password_manager.py (aggiungere colonne, cambiare
+l'interfaccia, ecc.) questa catena resta intatta. Per le categorie
+basterebbe:
+  1. Aggiungere una colonna "categoria" alla tabella con ALTER TABLE
+  2. Aggiornare l'interfaccia grafica
+I record esistenti avrebbero semplicemente la categoria vuota/default.
+
+--- Modifiche a secret.key / genera_chiave.py ---
+
+Qui la situazione e' molto piu' delicata. Se rigeneri secret.key:
+  - Viene creata una NUOVA Fernet key
+  - Tutte le password nel DB sono cifrate con la VECCHIA Fernet key
+  - Non saranno piu' decifrabili (errore InvalidToken)
+
+Cosa fare se vuoi cambiare solo la master password:
+  NON rigenerare la Fernet key. Scrivi uno script di migrazione che:
+  1. Decifra la Fernet key attuale con la vecchia master password
+  2. La ri-cifra con la nuova master password (o nuovo salt/iterazioni)
+  3. Sovrascrive secret.key con il nuovo formato
+
+Cosa fare se la Fernet key e' compromessa:
+  Scrivi uno script che:
+  1. Decifra TUTTE le password dal DB con la vecchia key
+  2. Genera una nuova Fernet key
+  3. Ri-cifra tutte le password con la nuova key
+  4. Aggiorna sia secret.key che password.db
+
+IMPORTANTE: fai SEMPRE un backup di secret.key e password.db prima di
+qualsiasi operazione su questi file. 
+
+--- In sintesi ---
+
+  password_manager.py --> Modificabile liberamente, le password sono al sicuro
+  secret.key          --> Mai rigenerare senza uno script di migrazione
+
+
+================================================================================
