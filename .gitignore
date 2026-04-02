@@ -211,3 +211,4 @@ __marimo__/
 *.key
 .env
 instance/
+password_leggibile.txt
