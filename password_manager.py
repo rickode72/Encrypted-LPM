@@ -1,10 +1,14 @@
 import tkinter as tk
 from tkinter import messagebox, ttk, simpledialog
+import tkinter.font as tkfont
 import sqlite3
 import ctypes
 import base64
 import os
+import re
+import subprocess
 import sys
+import platform
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -14,6 +18,86 @@ try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
+
+# Sceglie un font disponibile sulla piattaforma corrente.
+# Su Windows "Segoe UI" funziona; su Linux non esiste, quindi cerchiamo
+# il primo font sans-serif disponibile tra una lista di fallback.
+def _scegli_font_famiglia():
+    if platform.system() == "Windows":
+        return "Segoe UI"
+    # Per inizializzare tkfont serve un root Tk: ne creiamo uno nascosto e temporaneo.
+    tmp = tk.Tk()
+    tmp.withdraw()
+    try:
+        disponibili = set(tkfont.families())
+    finally:
+        tmp.destroy()
+    for candidato in ("Ubuntu", "Noto Sans", "DejaVu Sans", "Liberation Sans", "FreeSans", "Sans"):
+        if candidato in disponibili:
+            return candidato
+    return "TkDefaultFont"
+
+FONT_FAMILY = _scegli_font_famiglia()
+
+# Moltiplicatore globale per scalare i valori in pixel hardcoded (geometry,
+# minsize, larghezze colonne) in sincrono con lo scaling DPI di Tk.
+# Viene impostato da applica_dpi_scaling() al primo avvio.
+GEOMETRY_MULT = 1.0
+
+def _dpi_reale_da_xrandr():
+    """Calcola il DPI fisico reale dal primo monitor connesso via xrandr.
+    Affidabile su Linux/X11/XWayland: Tk's winfo_screenmmwidth() spesso
+    riporta valori sbagliati su Wayland con fractional scaling."""
+    try:
+        out = subprocess.run(
+            ["xrandr"], capture_output=True, text=True, timeout=2
+        ).stdout
+        for line in out.splitlines():
+            m = re.search(
+                r"connected.*?(\d+)x\d+\+\d+\+\d+.*?(\d+)mm x \d+mm", line
+            )
+            if m:
+                px = int(m.group(1))
+                mm = int(m.group(2))
+                if mm > 0:
+                    return px / (mm / 25.4)
+    except Exception:
+        pass
+    return None
+
+def applica_dpi_scaling(root):
+    """Imposta lo scaling di Tk e il moltiplicatore di geometria in base al
+    DPI fisico reale, così il rendering è nitido anche su pannelli HiDPI o
+    con fractional scaling del compositor Wayland.
+
+    Permette override manuale via env var TK_SCALING (es. `TK_SCALING=1.6
+    python3 password_manager.py`) per sintonizzazione fine."""
+    global GEOMETRY_MULT
+    try:
+        override = os.environ.get("TK_SCALING")
+        if override:
+            scaling = float(override)
+        else:
+            dpi = _dpi_reale_da_xrandr()
+            if dpi is None:
+                # Fallback: usa il metodo Tk (meno affidabile)
+                px = root.winfo_screenwidth()
+                mm = root.winfo_screenmmwidth()
+                dpi = px / (mm / 25.4) if mm > 0 else 96
+            scaling = dpi / 72.0
+        # Cap: sotto 1.333 (default Tk Linux) non scendiamo; sopra 2.0
+        # le finestre diventerebbero ingestibili
+        scaling = max(1.333, min(scaling, 2.0))
+        root.tk.call("tk", "scaling", scaling)
+        # I valori in pixel hardcoded sono tarati sul default 1.333: li
+        # scaliamo proporzionalmente così finestra e font crescono insieme.
+        GEOMETRY_MULT = scaling / 1.333
+    except Exception:
+        pass
+
+def S(v):
+    """Scala un valore in pixel in base al DPI rilevato."""
+    return int(round(v * GEOMETRY_MULT))
 
 def deriva_chiave_da_password(password: str, salt: bytes) -> bytes:
     kdf = PBKDF2HMAC(
@@ -44,17 +128,19 @@ def chiedi_master_password():
 
     # Finestra di login
     login = tk.Tk()
+    applica_dpi_scaling(login)
     login.title("Login - Password Manager")
-    login.geometry("420x180")
+    login.geometry(f"{S(520)}x{S(240)}")
+    login.minsize(S(520), S(240))
     login.resizable(False, False)
 
-    font_label = ("Segoe UI", 12)
-    font_entry = ("Segoe UI", 12)
-    font_button = ("Segoe UI", 11, "bold")
+    font_label = (FONT_FAMILY, 12)
+    font_entry = (FONT_FAMILY, 12)
+    font_button = (FONT_FAMILY, 11, "bold")
 
-    tk.Label(login, text="Inserisci la Master Password:", font=font_label).pack(pady=(20, 5))
+    tk.Label(login, text="Inserisci la Master Password:", font=font_label).pack(pady=(25, 8))
     entry_master = tk.Entry(login, font=font_entry, show="*", width=30)
-    entry_master.pack(pady=5)
+    entry_master.pack(pady=8, ipady=4)
     entry_master.focus_set()
 
     risultato = {}
@@ -81,7 +167,8 @@ def chiedi_master_password():
     login.bind("<Return>", tentativo)
     login.protocol("WM_DELETE_WINDOW", on_chiudi)
 
-    tk.Button(login, text="Sblocca", command=tentativo, bg="#2196F3", fg="white", font=font_button).pack(pady=10)
+    tk.Button(login, text="Sblocca", command=tentativo, bg="#2196F3", fg="white",
+              font=font_button, padx=12, pady=4).pack(pady=15)
 
     login.mainloop()
 
@@ -182,20 +269,31 @@ def esporta_db_leggibile():
 
 def avvia_app():
     root = tk.Tk()
+    applica_dpi_scaling(root)
     root.title("Password Manager Locale")
-    root.geometry("1280x720")
-    root.minsize(800, 500)
+    root.geometry(f"{S(1280)}x{S(720)}")
+    root.minsize(S(800), S(500))
 
     # --- Stile e font scalati per rendering nitido ---
-    font_label = ("Segoe UI", 11)
-    font_entry = ("Segoe UI", 11)
-    font_button = ("Segoe UI", 10, "bold")
-    font_tabella = ("Segoe UI", 11)
+    font_label = (FONT_FAMILY, 11)
+    font_entry = (FONT_FAMILY, 11)
+    font_button = (FONT_FAMILY, 10, "bold")
+    font_tabella = (FONT_FAMILY, 11)
+
+    # Calcola l'altezza riga dalle metriche reali del font: su Linux il font
+    # di fallback è spesso più alto del previsto e con rowheight fisso le
+    # righe finiscono per sovrapporsi.
+    _f_tab = tkfont.Font(family=FONT_FAMILY, size=11)
+    row_h = _f_tab.metrics("linespace") + 12
 
     style = ttk.Style()
     style.theme_use("clam")
-    style.configure("Treeview", font=font_tabella, rowheight=30)
-    style.configure("Treeview.Heading", font=("Segoe UI", 11, "bold"))
+    style.configure("Treeview", font=font_tabella, rowheight=row_h)
+    style.configure("Treeview.Heading", font=(FONT_FAMILY, 11, "bold"))
+
+    # Mappa: id riga Treeview -> password in chiaro. Tiene le password fuori
+    # dalla UI ma raggiungibili per Ctrl+C e per la finestra di modifica.
+    password_reali = {}
 
     # --- Layout principale con grid responsivo ---
     root.columnconfigure(0, weight=1)
@@ -262,10 +360,10 @@ def avvia_app():
 
     colonne = ("ID", "Sito", "Username", "Password")
     tabella = ttk.Treeview(frame_tabella, columns=colonne, show="headings")
-    tabella.column("ID", width=60, minwidth=40, stretch=False)
-    tabella.column("Sito", width=250, minwidth=100)
-    tabella.column("Username", width=250, minwidth=100)
-    tabella.column("Password", width=300, minwidth=100)
+    tabella.column("ID", width=S(60), minwidth=S(40), stretch=False)
+    tabella.column("Sito", width=S(250), minwidth=S(100))
+    tabella.column("Username", width=S(250), minwidth=S(100))
+    tabella.column("Password", width=S(300), minwidth=S(100))
     for col in colonne:
         tabella.heading(col, text=col)
 
@@ -293,33 +391,49 @@ def avvia_app():
         if not selezione:
             messagebox.showwarning("Attenzione", "Seleziona una voce da modificare.")
             return
-        item = tabella.item(selezione[0])
+        row_id = selezione[0]
+        item = tabella.item(row_id)
         id_ = item["values"][0]
         vecchio_sito = str(item["values"][1])
         vecchio_user = str(item["values"][2])
-        vecchia_pwd = str(item["values"][3])
+        vecchia_pwd = password_reali.get(row_id, "")
 
         # Finestra di modifica
         win = tk.Toplevel(root)
         win.title("Modifica credenziale")
-        win.geometry("450x220")
-        win.resizable(False, False)
+        win.geometry(f"{S(640)}x{S(300)}")
+        win.minsize(S(640), S(300))
+        win.resizable(True, False)
         win.grab_set()
+        # Colonna dell'Entry si espande, label e toggle restano fissi
+        win.columnconfigure(1, weight=1)
 
         tk.Label(win, text="Sito:", font=font_label).grid(row=0, column=0, padx=10, pady=(15, 5), sticky="e")
         e_sito = tk.Entry(win, font=font_entry, width=30)
-        e_sito.grid(row=0, column=1, padx=10, pady=(15, 5))
+        e_sito.grid(row=0, column=1, padx=10, pady=(15, 5), columnspan=2, sticky="ew")
         e_sito.insert(0, vecchio_sito)
 
         tk.Label(win, text="Username:", font=font_label).grid(row=1, column=0, padx=10, pady=5, sticky="e")
         e_user = tk.Entry(win, font=font_entry, width=30)
-        e_user.grid(row=1, column=1, padx=10, pady=5)
+        e_user.grid(row=1, column=1, padx=10, pady=5, columnspan=2, sticky="ew")
         e_user.insert(0, vecchio_user)
 
         tk.Label(win, text="Password:", font=font_label).grid(row=2, column=0, padx=10, pady=5, sticky="e")
-        e_pwd = tk.Entry(win, font=font_entry, width=30)
-        e_pwd.grid(row=2, column=1, padx=10, pady=5)
+        e_pwd = tk.Entry(win, font=font_entry, width=30, show="*")
+        e_pwd.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
         e_pwd.insert(0, vecchia_pwd)
+
+        def toggle_pwd_modifica():
+            if e_pwd.cget("show") == "*":
+                e_pwd.config(show="")
+                btn_toggle_pwd.config(text="Nascondi")
+            else:
+                e_pwd.config(show="*")
+                btn_toggle_pwd.config(text="Mostra")
+
+        btn_toggle_pwd = tk.Button(win, text="Mostra", command=toggle_pwd_modifica,
+                                   font=font_button, width=8)
+        btn_toggle_pwd.grid(row=2, column=2, padx=(0, 10), pady=5)
 
         def salva_modifica(event=None):
             nuovo_sito = e_sito.get().strip()
@@ -335,7 +449,7 @@ def avvia_app():
             esporta_db_leggibile()
 
         win.bind("<Return>", salva_modifica)
-        tk.Button(win, text="Salva modifiche", command=salva_modifica, bg="#2196F3", fg="white", font=font_button).grid(row=3, column=0, columnspan=2, pady=15)
+        tk.Button(win, text="Salva modifiche", command=salva_modifica, bg="#2196F3", fg="white", font=font_button).grid(row=3, column=0, columnspan=3, pady=15)
 
     # --- Barra di ricerca ---
     frame_cerca = tk.Frame(root)
@@ -367,14 +481,40 @@ def avvia_app():
     btn_cerca.pack(side="left", padx=5)
     entry_cerca.bind("<Return>", esegui_ricerca)
 
+    # Label di feedback per la copia in clipboard (es. "Password copiata")
+    lbl_feedback = tk.Label(frame_cerca, text="", font=font_label, fg="#2E7D32")
+    lbl_feedback.pack(side="left", padx=15)
+
+    def mostra_feedback(messaggio, durata_ms=2000):
+        lbl_feedback.config(text=messaggio)
+        lbl_feedback.after(durata_ms, lambda: lbl_feedback.config(text=""))
+
+    def on_copia_password(event=None):
+        """Copia la password della riga selezionata negli appunti senza mostrarla."""
+        selezione = tabella.selection()
+        if not selezione:
+            return "break"
+        row_id = selezione[0]
+        pwd = password_reali.get(row_id)
+        if pwd is None:
+            return "break"
+        root.clipboard_clear()
+        root.clipboard_append(pwd)
+        root.update()  # forza l'aggiornamento del clipboard
+        mostra_feedback("Password copiata negli appunti")
+        return "break"
+
+    tabella.bind("<Control-c>", on_copia_password)
+    tabella.bind("<Control-C>", on_copia_password)
+
     # --- Bottone "Modifica" flottante sopra la riga selezionata ---
-    font_popup = ("Segoe UI", 9)
+    font_popup = (FONT_FAMILY, 10, "bold")
     btn_modifica_popup = tk.Button(frame_tabella, text="Modifica", command=on_modifica,
                                    bg="white", fg="black", font=font_popup,
-                                   relief="solid", borderwidth=1, padx=4, pady=1)
+                                   relief="solid", borderwidth=1)
     btn_cancella_popup = tk.Button(frame_tabella, text="\U0001F5D1", command=on_cancella,
                                    bg="#e53935", fg="white", font=font_popup,
-                                   relief="solid", borderwidth=1, padx=4, pady=1)
+                                   relief="solid", borderwidth=1)
 
     def nascondi_popup():
         btn_modifica_popup.place_forget()
@@ -385,18 +525,21 @@ def avvia_app():
         if not bbox:
             return
         x, y, w, h = bbox
-        btn_mod_w = 70
-        btn_del_w = 32
-        gap = 4
-        # Posiziona i bottoni a destra, con un margine dal bordo
+        # Dimensioni proporzionate all'altezza riga (che è già scalata sul font).
+        # Così su qualunque DPI/dimensione finestra i bottoni restano armonici.
+        btn_h = max(h - 4, 24)
+        btn_mod_w = max(int(btn_h * 3.2), 90)
+        btn_del_w = max(int(btn_h * 1.3), 42)
+        gap = 6
+        # Margine dal bordo destro: tiene conto dello scrollbar
+        margine_dx = scrollbar.winfo_width() + 10 if scrollbar.winfo_ismapped() else 14
         frame_w = frame_tabella.winfo_width()
-        btn_del_x = frame_w - btn_del_w - 30
+        btn_del_x = frame_w - btn_del_w - margine_dx
         btn_mod_x = btn_del_x - btn_mod_w - gap
-        btn_y = y - 30
-        if btn_y < 0:
-            btn_y = y + h + 2
-        btn_modifica_popup.place(x=btn_mod_x, y=btn_y, width=btn_mod_w)
-        btn_cancella_popup.place(x=btn_del_x, y=btn_y, width=btn_del_w)
+        # Centrato verticalmente sulla riga: non esce mai dal frame visibile
+        btn_y = y + (h - btn_h) // 2
+        btn_modifica_popup.place(x=btn_mod_x, y=btn_y, width=btn_mod_w, height=btn_h)
+        btn_cancella_popup.place(x=btn_del_x, y=btn_y, width=btn_del_w, height=btn_h)
 
     def on_click_tabella(event):
         region = tabella.identify_region(event.x, event.y)
@@ -438,8 +581,12 @@ def avvia_app():
     def aggiorna_tabella():
         for row in tabella.get_children():
             tabella.delete(row)
+        password_reali.clear()
         for voce in leggi_passwords():
-            tabella.insert("", "end", values=voce)
+            id_, sito, username, pwd_reale = voce
+            pwd_mascherata = "•" * len(pwd_reale)
+            row_id = tabella.insert("", "end", values=(id_, sito, username, pwd_mascherata))
+            password_reali[row_id] = pwd_reale
 
     aggiorna_tabella()
     root.mainloop()
