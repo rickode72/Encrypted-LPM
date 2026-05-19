@@ -99,6 +99,14 @@ def S(v):
     """Scala un valore in pixel in base al DPI rilevato."""
     return int(round(v * GEOMETRY_MULT))
 
+def centra_finestra(win, w, h):
+    """Centra una finestra di dimensioni w x h sullo schermo corrente."""
+    sw = win.winfo_screenwidth()
+    sh = win.winfo_screenheight()
+    x = max(0, (sw - w) // 2)
+    y = max(0, (sh - h) // 2)
+    win.geometry(f"{w}x{h}+{x}+{y}")
+
 def deriva_chiave_da_password(password: str, salt: bytes) -> bytes:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
@@ -130,7 +138,7 @@ def chiedi_master_password():
     login = tk.Tk()
     applica_dpi_scaling(login)
     login.title("Login - Password Manager")
-    login.geometry(f"{S(520)}x{S(240)}")
+    centra_finestra(login, S(520), S(240))
     login.minsize(S(520), S(240))
     login.resizable(False, False)
 
@@ -271,8 +279,14 @@ def avvia_app():
     root = tk.Tk()
     applica_dpi_scaling(root)
     root.title("Password Manager Locale")
-    root.geometry(f"{S(1280)}x{S(720)}")
-    root.minsize(S(800), S(500))
+    # Finestra proporzionata allo schermo: 70% in larghezza e altezza,
+    # così su 1920x1200 occupa ~1344x840 con margini equilibrati.
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    w_main = int(sw * 0.70)
+    h_main = int(sh * 0.70)
+    centra_finestra(root, w_main, h_main)
+    root.minsize(int(sw * 0.45), int(sh * 0.45))
 
     # --- Stile e font scalati per rendering nitido ---
     font_label = (FONT_FAMILY, 11)
@@ -401,7 +415,7 @@ def avvia_app():
         # Finestra di modifica
         win = tk.Toplevel(root)
         win.title("Modifica credenziale")
-        win.geometry(f"{S(640)}x{S(300)}")
+        centra_finestra(win, S(640), S(300))
         win.minsize(S(640), S(300))
         win.resizable(True, False)
         win.grab_set()
