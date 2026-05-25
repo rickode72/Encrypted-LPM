@@ -5,8 +5,6 @@ import sqlite3
 import ctypes
 import base64
 import os
-import re
-import subprocess
 import sys
 import platform
 from cryptography.fernet import Fernet, InvalidToken
@@ -39,58 +37,22 @@ def _scegli_font_famiglia():
 
 FONT_FAMILY = _scegli_font_famiglia()
 
-# Moltiplicatore globale per scalare i valori in pixel hardcoded (geometry,
-# minsize, larghezze colonne) in sincrono con lo scaling DPI di Tk.
-# Viene impostato da applica_dpi_scaling() al primo avvio.
-GEOMETRY_MULT = 1.0
-
-def _dpi_reale_da_xrandr():
-    """Calcola il DPI fisico reale dal primo monitor connesso via xrandr.
-    Affidabile su Linux/X11/XWayland: Tk's winfo_screenmmwidth() spesso
-    riporta valori sbagliati su Wayland con fractional scaling."""
-    try:
-        out = subprocess.run(
-            ["xrandr"], capture_output=True, text=True, timeout=2
-        ).stdout
-        for line in out.splitlines():
-            m = re.search(
-                r"connected.*?(\d+)x\d+\+\d+\+\d+.*?(\d+)mm x \d+mm", line
-            )
-            if m:
-                px = int(m.group(1))
-                mm = int(m.group(2))
-                if mm > 0:
-                    return px / (mm / 25.4)
-    except Exception:
-        pass
-    return None
+# Scaling fisso: la rilevazione automatica del DPI su Linux era inaffidabile
+# (xrandr/winfo_screenmmwidth restituiscono valori diversi a seconda di
+# Wayland/X11 e del fractional scaling del compositor), quindi a volte la
+# finestra si apriva minuscola. Valori fissi → comportamento riproducibile.
+# Override manuale via env var TK_SCALING (es. `TK_SCALING=1.7 python3 ...`).
+SCALING_DEFAULT = 1.5
+GEOMETRY_MULT = SCALING_DEFAULT / 1.333
 
 def applica_dpi_scaling(root):
-    """Imposta lo scaling di Tk e il moltiplicatore di geometria in base al
-    DPI fisico reale, così il rendering è nitido anche su pannelli HiDPI o
-    con fractional scaling del compositor Wayland.
-
-    Permette override manuale via env var TK_SCALING (es. `TK_SCALING=1.6
-    python3 password_manager.py`) per sintonizzazione fine."""
+    """Imposta lo scaling di Tk a un valore fisso e prevedibile."""
     global GEOMETRY_MULT
     try:
         override = os.environ.get("TK_SCALING")
-        if override:
-            scaling = float(override)
-        else:
-            dpi = _dpi_reale_da_xrandr()
-            if dpi is None:
-                # Fallback: usa il metodo Tk (meno affidabile)
-                px = root.winfo_screenwidth()
-                mm = root.winfo_screenmmwidth()
-                dpi = px / (mm / 25.4) if mm > 0 else 96
-            scaling = dpi / 72.0
-        # Cap: sotto 1.333 (default Tk Linux) non scendiamo; sopra 2.0
-        # le finestre diventerebbero ingestibili
-        scaling = max(1.333, min(scaling, 2.0))
+        scaling = float(override) if override else SCALING_DEFAULT
+        scaling = max(1.0, min(scaling, 2.5))
         root.tk.call("tk", "scaling", scaling)
-        # I valori in pixel hardcoded sono tarati sul default 1.333: li
-        # scaliamo proporzionalmente così finestra e font crescono insieme.
         GEOMETRY_MULT = scaling / 1.333
     except Exception:
         pass
@@ -279,14 +241,12 @@ def avvia_app():
     root = tk.Tk()
     applica_dpi_scaling(root)
     root.title("Password Manager Locale")
-    # Finestra proporzionata allo schermo: 70% in larghezza e altezza,
-    # così su 1920x1200 occupa ~1344x840 con margini equilibrati.
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
-    w_main = int(sw * 0.70)
-    h_main = int(sh * 0.70)
+    # Dimensioni fisse scalate dal moltiplicatore DPI: comportamento
+    # riproducibile a ogni avvio, dimensionate per schermi >= 1600x900.
+    w_main = S(1280)
+    h_main = S(780)
     centra_finestra(root, w_main, h_main)
-    root.minsize(int(sw * 0.45), int(sh * 0.45))
+    root.minsize(S(900), S(560))
 
     # --- Stile e font scalati per rendering nitido ---
     font_label = (FONT_FAMILY, 11)
